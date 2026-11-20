@@ -1,0 +1,17 @@
+name: 缺陷
+description: 报告一个可复现的问题
+title: "[缺陷] "
+labels: ["bug"]
+body:
+  - type: textarea
+    attributes:
+      label: 发生了什么
+      description: 写出实际结果、期望结果和复现步骤。不要贴 Token、密码或生产数据。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 测试
+      description: 说明已经跑过的命令和结果。
+    validations:
+      required: true

@@ -1,0 +1,362 @@
+"""项目、任务状态、扫描、执行记录和仪表盘。不调用外部 Agent。"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "dist", "build", "target"}
+LANGS = {
+    ".java": "Java",
+    ".py": "Python",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript",
+    ".js": "JavaScript",
+    ".go": "Go",
+    ".sql": "SQL",
+    ".yml": "YAML",
+    ".yaml": "YAML",
+}
+TRANSITIONS = {
+    "draft": {"ready", "blocked"},
+    "ready": {"running", "blocked"},
+    "running": {"review", "blocked"},
+    "review": {"accepted", "running", "blocked"},
+    "blocked": {"ready"},
+    "accepted": set(),
+}
+KNOWLEDGE_KINDS = {"spec", "decision", "constraint", "note"}
+RISKS = {"info", "low", "medium", "high"}
+
+
+class DomainError(ValueError):
+    """调用方可以修正的业务错误。"""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _id() -> str:
+    return uuid.uuid4().hex
+
+
+class Store:
+    def __init__(self, path: str = ":memory:"):
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+              id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+              repo_url TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS tasks (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT,
+              title TEXT NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS executions (
+              id TEXT PRIMARY KEY, task_id TEXT NOT NULL, instruction TEXT NOT NULL,
+              status TEXT NOT NULL, log TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS diffs (
+              id TEXT PRIMARY KEY, task_id TEXT NOT NULL, summary TEXT NOT NULL,
+              files_json TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS test_runs (
+              id TEXT PRIMARY KEY, task_id TEXT NOT NULL, passed INTEGER NOT NULL,
+              failed INTEGER NOT NULL, summary TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS reviews (
+              id TEXT PRIMARY KEY, task_id TEXT NOT NULL, findings TEXT NOT NULL,
+              risk TEXT NOT NULL, accepted INTEGER NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS knowledge (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL,
+              title TEXT NOT NULL, body TEXT NOT NULL, source TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS scans (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            """
+        )
+
+    def create_project(self, name: str, description: str, repo_url: str = "") -> dict:
+        name = name.strip()
+        description = description.strip()
+        if not name or not description:
+            raise DomainError("项目名称和说明都不能为空")
+        row = {"id": _id(), "name": name, "description": description, "repo_url": repo_url.strip(), "created_at": _now()}
+        self.conn.execute(
+            "INSERT INTO projects VALUES (:id,:name,:description,:repo_url,:created_at)", row
+        )
+        self.conn.commit()
+        return row
+
+    def list_projects(self) -> list[dict]:
+        return [dict(r) for r in self.conn.execute("SELECT * FROM projects ORDER BY created_at")]
+
+    def get_project(self, project_id: str) -> dict:
+        row = self.conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if row is None:
+            raise DomainError("项目不存在")
+        return dict(row)
+
+    def create_task(self, project_id: str, title: str, description: str, parent_id: str | None = None) -> dict:
+        self.get_project(project_id)
+        title = title.strip()
+        if not title:
+            raise DomainError("任务标题不能为空")
+        if parent_id:
+            parent = self.get_task(parent_id)
+            if parent["project_id"] != project_id:
+                raise DomainError("子任务必须属于同一个项目")
+        row = {
+            "id": _id(),
+            "project_id": project_id,
+            "parent_id": parent_id,
+            "title": title,
+            "description": description.strip(),
+            "status": "draft",
+            "created_at": _now(),
+        }
+        self.conn.execute(
+            "INSERT INTO tasks VALUES (:id,:project_id,:parent_id,:title,:description,:status,:created_at)",
+            row,
+        )
+        self.conn.commit()
+        return row
+
+    def list_tasks(self, project_id: str | None = None) -> list[dict]:
+        if project_id:
+            rows = self.conn.execute("SELECT * FROM tasks WHERE project_id=? ORDER BY created_at", (project_id,))
+        else:
+            rows = self.conn.execute("SELECT * FROM tasks ORDER BY created_at")
+        return [dict(r) for r in rows]
+
+    def get_task(self, task_id: str) -> dict:
+        row = self.conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            raise DomainError("任务不存在")
+        return dict(row)
+
+    def transition(self, task_id: str, status: str) -> dict:
+        task = self.get_task(task_id)
+        if status not in TRANSITIONS.get(task["status"], set()):
+            raise DomainError(f"不能从 {task['status']} 改为 {status}")
+        self.conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
+        self.conn.commit()
+        return self.get_task(task_id)
+
+    def split_task(self, task_id: str, titles: list[str]) -> list[dict]:
+        parent = self.get_task(task_id)
+        if parent["status"] == "accepted":
+            raise DomainError("已验收的任务不能再拆分")
+        cleaned = [t.strip() for t in titles if t and t.strip()]
+        if not cleaned:
+            raise DomainError("至少要有一个子任务标题")
+        return [self.create_task(parent["project_id"], title, "", parent["id"]) for title in cleaned]
+
+    def add_knowledge(self, project_id: str, kind: str, title: str, body: str, source: str) -> dict:
+        self.get_project(project_id)
+        if kind not in KNOWLEDGE_KINDS:
+            raise DomainError("知识类型必须是 spec、decision、constraint 或 note")
+        if not title.strip() or not body.strip() or not source.strip():
+            raise DomainError("知识要有标题、正文和来源")
+        row = {
+            "id": _id(),
+            "project_id": project_id,
+            "kind": kind,
+            "title": title.strip(),
+            "body": body.strip(),
+            "source": source.strip(),
+            "created_at": _now(),
+        }
+        self.conn.execute(
+            "INSERT INTO knowledge VALUES (:id,:project_id,:kind,:title,:body,:source,:created_at)", row
+        )
+        self.conn.commit()
+        return row
+
+    def list_knowledge(self, project_id: str) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM knowledge WHERE project_id=? ORDER BY created_at", (project_id,))
+        return [dict(r) for r in rows]
+
+    def save_scan(self, project_id: str, payload: dict) -> dict:
+        self.get_project(project_id)
+        row = {"id": _id(), "project_id": project_id, "payload_json": json.dumps(payload, ensure_ascii=False), "created_at": _now()}
+        self.conn.execute("INSERT INTO scans VALUES (:id,:project_id,:payload_json,:created_at)", row)
+        self.conn.commit()
+        row["payload"] = payload
+        return row
+
+    def latest_scan(self, project_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM scans WHERE project_id=? ORDER BY created_at DESC LIMIT 1", (project_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["payload"] = json.loads(data.pop("payload_json"))
+        return data
+
+    def add_execution(self, task_id: str, status: str, log: str) -> dict:
+        task = self.get_task(task_id)
+        if task["status"] not in {"ready", "running", "review"}:
+            raise DomainError("只有 ready、running 或 review 的任务可以记执行记录")
+        if status not in {"recorded", "failed"}:
+            raise DomainError("执行状态只能是 recorded 或 failed")
+        instruction = build_instruction(self, task)
+        row = {
+            "id": _id(),
+            "task_id": task_id,
+            "instruction": instruction,
+            "status": status,
+            "log": log.strip(),
+            "created_at": _now(),
+        }
+        self.conn.execute(
+            "INSERT INTO executions VALUES (:id,:task_id,:instruction,:status,:log,:created_at)", row
+        )
+        self.conn.commit()
+        return row
+
+    def add_diff(self, task_id: str, summary: str, files: list[str]) -> dict:
+        task = self.get_task(task_id)
+        if task["status"] not in {"running", "review"}:
+            raise DomainError("只有执行中或审查中的任务可以记 Diff")
+        if not summary.strip():
+            raise DomainError("Diff 摘要不能为空")
+        row = {
+            "id": _id(),
+            "task_id": task_id,
+            "summary": summary.strip(),
+            "files_json": json.dumps(files, ensure_ascii=False),
+            "created_at": _now(),
+        }
+        self.conn.execute("INSERT INTO diffs VALUES (:id,:task_id,:summary,:files_json,:created_at)", row)
+        self.conn.commit()
+        row["files"] = files
+        return row
+
+    def add_test_run(self, task_id: str, passed: int, failed: int, summary: str) -> dict:
+        task = self.get_task(task_id)
+        if task["status"] not in {"running", "review"}:
+            raise DomainError("只有执行中或审查中的任务可以记测试")
+        if passed < 0 or failed < 0:
+            raise DomainError("测试数量不能为负")
+        row = {
+            "id": _id(),
+            "task_id": task_id,
+            "passed": passed,
+            "failed": failed,
+            "summary": summary.strip(),
+            "created_at": _now(),
+        }
+        self.conn.execute(
+            "INSERT INTO test_runs VALUES (:id,:task_id,:passed,:failed,:summary,:created_at)", row
+        )
+        self.conn.commit()
+        return row
+
+    def add_review(self, task_id: str, findings: str, risk: str, accepted: bool) -> dict:
+        task = self.get_task(task_id)
+        if task["status"] != "review":
+            raise DomainError("只有审查中的任务可以记审查结论")
+        if risk not in RISKS:
+            raise DomainError("风险必须是 info、low、medium 或 high")
+        if not findings.strip():
+            raise DomainError("审查结论不能为空")
+        if accepted and risk == "high":
+            raise DomainError("高风险审查不能直接验收")
+        row = {
+            "id": _id(),
+            "task_id": task_id,
+            "findings": findings.strip(),
+            "risk": risk,
+            "accepted": 1 if accepted else 0,
+            "created_at": _now(),
+        }
+        self.conn.execute(
+            "INSERT INTO reviews VALUES (:id,:task_id,:findings,:risk,:accepted,:created_at)", row
+        )
+        if accepted:
+            self.conn.execute("UPDATE tasks SET status='accepted' WHERE id=?", (task_id,))
+        self.conn.commit()
+        return row
+
+    def dashboard(self) -> dict:
+        projects = self.list_projects()
+        tasks = self.list_tasks()
+        by_status = {name: 0 for name in TRANSITIONS}
+        for task in tasks:
+            by_status[task["status"]] = by_status.get(task["status"], 0) + 1
+        executions = self.conn.execute("SELECT COUNT(*) FROM executions").fetchone()[0]
+        failed = self.conn.execute("SELECT COUNT(*) FROM executions WHERE status='failed'").fetchone()[0]
+        open_risks = self.conn.execute(
+            "SELECT COUNT(*) FROM reviews WHERE accepted=0 AND risk IN ('medium','high')"
+        ).fetchone()[0]
+        return {
+            "project_count": len(projects),
+            "task_count": len(tasks),
+            "tasks_by_status": by_status,
+            "execution_count": executions,
+            "failed_execution_count": failed,
+            "open_risk_count": open_risks,
+        }
+
+
+def scan_directory(root: Path, base: Path, limit: int = 5000) -> dict:
+    root = root.resolve()
+    base = base.resolve()
+    if not root.is_relative_to(base):
+        raise DomainError("扫描路径必须位于允许的工作区之内")
+    if not root.is_dir():
+        raise DomainError("扫描路径不是目录")
+    languages: dict[str, int] = {}
+    modules: dict[str, int] = {}
+    files = 0
+    for path in root.rglob("*"):
+        if any(part in SKIP_DIRS for part in path.parts):
+            continue
+        if not path.is_file():
+            continue
+        files += 1
+        if files > limit:
+            raise DomainError(f"文件数超过 {limit}，请缩小扫描目录")
+        lang = LANGS.get(path.suffix.lower())
+        if lang:
+            languages[lang] = languages.get(lang, 0) + 1
+        relative = path.relative_to(root)
+        top = relative.parts[0] if len(relative.parts) > 1 else "(root)"
+        modules[top] = modules.get(top, 0) + 1
+    return {
+        "root": str(root),
+        "file_count": files,
+        "languages": dict(sorted(languages.items())),
+        "modules": dict(sorted(modules.items())),
+    }
+
+
+def build_instruction(store: Store, task: dict) -> str:
+    project = store.get_project(task["project_id"])
+    knowledge = store.list_knowledge(task["project_id"])
+    constraints = [item for item in knowledge if item["kind"] in {"constraint", "decision", "spec"}]
+    lines = [
+        f"项目：{project['name']}",
+        f"说明：{project['description']}",
+        f"任务：{task['title']}",
+        f"任务说明：{task['description'] or '无'}",
+        "要求：人负责验收。不要改无关代码，不要提交密钥。完成后写明改了什么、怎么测试。",
+    ]
+    if constraints:
+        lines.append("项目知识：")
+        for item in constraints:
+            lines.append(f"- [{item['kind']}] {item['title']}（来源 {item['source']}）：{item['body']}")
+    return "\n".join(lines)

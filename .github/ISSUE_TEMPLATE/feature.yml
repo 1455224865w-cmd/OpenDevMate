@@ -1,0 +1,17 @@
+name: 功能
+description: 提出一个有使用场景的功能
+title: "[功能] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    attributes:
+      label: 要解决的问题
+      description: 谁在什么场景下遇到了什么问题。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 验收标准
+      description: 列出可测试的完成条件，以及明确不做的事。
+    validations:
+      required: true
