@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -360,3 +361,46 @@ def build_instruction(store: Store, task: dict) -> str:
         for item in constraints:
             lines.append(f"- [{item['kind']}] {item['title']}（来源 {item['source']}）：{item['body']}")
     return "\n".join(lines)
+
+
+def import_github_issues(store: Store, project_id: str, issues: list[dict], token_present: bool) -> list[dict]:
+    """导入 GitHub Issue。没有 Token 时不访问外部服务，也不覆盖本地任务。"""
+    if not token_present:
+        raise DomainError("没有 Token，本地任务仍可使用")
+    existing = store.list_tasks(project_id)
+    created = []
+    for issue in issues:
+        number = int(issue["number"])
+        marker = f"github:{number}"
+        if any(marker in (task["description"] or "") for task in existing):
+            continue
+        title = _redact_secrets(f"[GitHub #{number}] {str(issue.get('title') or '').strip()}")
+        body = _redact_secrets(str(issue.get("body") or ""))
+        task = store.create_task(project_id, title, f"{marker}\n{body}")
+        created.append(task)
+        existing.append(task)
+    return created
+
+
+def run_agent(store: Store, task_id: str, workspace: Path, base: Path, runner) -> dict:
+    """只允许在独立工作区里调用执行器，不直接使用默认工作区。"""
+    workspace = workspace.resolve()
+    base = base.resolve()
+    if not workspace.is_relative_to(base) or workspace == base:
+        raise DomainError("执行目录必须是独立工作区，不能使用默认工作区或其外部路径")
+    task = store.get_task(task_id)
+    if task["status"] == "ready":
+        store.transition(task_id, "running")
+    try:
+        log = str(runner(workspace))
+        status = "recorded"
+    except Exception as exc:
+        log = str(exc)
+        status = "failed"
+    return store.add_execution(task_id, status, log)
+
+
+def _redact_secrets(text: str) -> str:
+    text = re.sub(r"ghp_[A-Za-z0-9]{20,}", "[REDACTED_TOKEN]", text)
+    text = re.sub(r"github_pat_[A-Za-z0-9_]+", "[REDACTED_TOKEN]", text)
+    return text
