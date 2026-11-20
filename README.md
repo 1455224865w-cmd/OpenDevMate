@@ -34,3 +34,9 @@ uvicorn opendevmate.api:app --reload
 ## 许可证
 
 Apache-2.0。选择理由见架构决策记录。
+
+## 语言和 Spring AI
+
+默认语言是中文。请求带 `Accept-Language: en` 或 `?lang=en` 时，错误信息和工具说明返回英文。源码、SQL、日志原文不翻译。
+
+Spring AI 不内嵌在本服务里。把 `spring-ai/pom-snippet.xml` 的 `spring-ai-starter-mcp-client` 加到 Spring AI 应用，并使用 `spring-ai/application-mcp.yml` 的 Streamable HTTP 连接。端点是 `/mcp`。本仓库的测试覆盖 MCP 的 initialize、tools/list 和 tools/call，不编译 Java。

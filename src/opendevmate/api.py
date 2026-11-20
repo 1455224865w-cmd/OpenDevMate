@@ -9,6 +9,8 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from opendevmate.i18n import current_locale, install, text
+from opendevmate.mcp_server import mount
 from opendevmate.service import DomainError, Store, scan_directory
 
 BASE = Path(os.environ.get("OPENDEVMATE_WORKSPACE", Path.cwd()))
@@ -73,7 +75,9 @@ class KnowledgeIn(BaseModel):
 
 
 def create_app(store: Store | None = None, workspace: Path | None = None) -> FastAPI:
-    app = FastAPI(title="OpenDevMate", version="0.1.0")
+    app = FastAPI(title="OpenDevMate", version="0.1.6")
+    install(app)
+    mount(app)
     app.state.store = store or Store(os.environ.get("OPENDEVMATE_DB", "opendevmate.sqlite3"))
     app.state.workspace = workspace or BASE
 
@@ -170,16 +174,18 @@ def create_app(store: Store | None = None, workspace: Path | None = None) -> Fas
     @app.get("/dashboard")
     def dashboard_page():
         data = app.state.store.dashboard()
+        locale = current_locale.get()
         rows = "".join(
             f"<tr><td>{html.escape(status)}</td><td>{count}</td></tr>"
             for status, count in data["tasks_by_status"].items()
         )
+        lang = "en" if locale == "en" else "zh-CN"
         page = f"""<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>OpenDevMate</title></head>
+<html lang="{lang}"><head><meta charset="utf-8"><title>OpenDevMate</title></head>
 <body>
 <h1>OpenDevMate</h1>
-<p>项目 {data['project_count']}，任务 {data['task_count']}，执行 {data['execution_count']}，失败执行 {data['failed_execution_count']}，未关闭风险 {data['open_risk_count']}</p>
-<table border="1"><tr><th>状态</th><th>数量</th></tr>{rows}</table>
+<p>{html.escape(text("dashboard.projects", locale))} {data['project_count']}，{html.escape(text("dashboard.tasks", locale))} {data['task_count']}，{html.escape(text("dashboard.executions", locale))} {data['execution_count']}，{html.escape(text("dashboard.failed", locale))} {data['failed_execution_count']}，{html.escape(text("dashboard.risks", locale))} {data['open_risk_count']}</p>
+<table border="1"><tr><th>{html.escape(text("dashboard.status", locale))}</th><th>{html.escape(text("dashboard.count", locale))}</th></tr>{rows}</table>
 </body></html>"""
         from fastapi.responses import HTMLResponse
 

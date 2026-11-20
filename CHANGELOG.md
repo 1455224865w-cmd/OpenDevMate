@@ -1,5 +1,10 @@
 # 变更记录
 
+## 0.1.6
+
+- 接口和页面按 Accept-Language 或 lang 在中文和英文之间切换，默认中文。
+- 提供无状态 MCP `/mcp`。Spring AI 用 Streamable HTTP 客户端连接，工具不调用外部 Agent。
+
 ## 0.1.5
 
 - 父任务在子任务全部验收之前不能验收。
