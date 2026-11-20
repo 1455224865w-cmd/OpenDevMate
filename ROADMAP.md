@@ -29,3 +29,7 @@
 ## 0.1.2
 
 借鉴 [tickmarkr](https://github.com/alzahrani-khalid/tickmarkr) 的验收标准和 [LaneGate](https://github.com/sudheerdvn/lanegate) 的文件范围：任务可以声明验收条件和允许改动的路径。超出范围或测试仍失败时不能验收。没有这份约定时，原有审查流程不变。
+
+## 0.1.3
+
+进行中的任务会检查已声明的路径是否重叠。没有约定的任务仍按原流程执行。

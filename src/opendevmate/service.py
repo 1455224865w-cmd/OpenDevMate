@@ -154,6 +154,8 @@ class Store:
         task = self.get_task(task_id)
         if status not in TRANSITIONS.get(task["status"], set()):
             raise DomainError(f"不能从 {task['status']} 改为 {status}")
+        if status == "running":
+            self._ensure_no_overlap(task)
         self.conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
         self.conn.commit()
         return self.get_task(task_id)
@@ -324,6 +326,36 @@ class Store:
         self.conn.commit()
         return {"acceptance": criteria, "touches": paths}
 
+    def conflicts(self, project_id: str) -> list[dict]:
+        """列出仍在进行、且声明路径重叠的任务。没有约定的任务不参与比较。"""
+        self.get_project(project_id)
+        active = [
+            task
+            for task in self.list_tasks(project_id)
+            if task["status"] in {"ready", "running", "review"}
+        ]
+        found = []
+        for index, left in enumerate(active):
+            left_contract = self.get_contract(left["id"])
+            if left_contract is None:
+                continue
+            for right in active[index + 1 :]:
+                right_contract = self.get_contract(right["id"])
+                if right_contract and _ranges_overlap(left_contract["touches"], right_contract["touches"]):
+                    found.append({"tasks": [left["id"], right["id"]], "status": "overlap"})
+        return found
+
+    def _ensure_no_overlap(self, task: dict) -> None:
+        contract = self.get_contract(task["id"])
+        if contract is None:
+            return
+        for other in self.list_tasks(task["project_id"]):
+            if other["id"] == task["id"] or other["status"] not in {"running", "review"}:
+                continue
+            other_contract = self.get_contract(other["id"])
+            if other_contract and _ranges_overlap(contract["touches"], other_contract["touches"]):
+                raise DomainError("改动范围与正在执行的任务重叠")
+
     def get_contract(self, task_id: str) -> dict | None:
         row = self.conn.execute("SELECT * FROM contracts WHERE task_id=?", (task_id,)).fetchone()
         if row is None:
@@ -441,6 +473,14 @@ def _sensitive(path: str) -> bool:
         or "/.git/" in f"/{normal}/"
         or normal.startswith(".git/")
     )
+
+
+def _ranges_overlap(left: list[str], right: list[str]) -> bool:
+    for one in left:
+        for other in right:
+            if one == other or one.startswith(other.rstrip("/") + "/") or other.startswith(one.rstrip("/") + "/"):
+                return True
+    return False
 
 
 def _within(path: str, touches: list[str]) -> bool:

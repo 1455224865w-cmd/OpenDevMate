@@ -54,6 +54,11 @@ class TestIn(BaseModel):
     summary: str = ""
 
 
+class ContractIn(BaseModel):
+    acceptance: list[str]
+    touches: list[str]
+
+
 class ReviewIn(BaseModel):
     findings: str
     risk: str
@@ -139,6 +144,14 @@ def create_app(store: Store | None = None, workspace: Path | None = None) -> Fas
     @app.post("/api/tasks/{task_id}/tests")
     def tests(task_id: str, body: TestIn):
         return run(lambda: app.state.store.add_test_run(task_id, body.passed, body.failed, body.summary))
+
+    @app.post("/api/tasks/{task_id}/contract")
+    def contract(task_id: str, body: ContractIn):
+        return run(lambda: app.state.store.set_contract(task_id, body.acceptance, body.touches))
+
+    @app.get("/api/projects/{project_id}/conflicts")
+    def conflicts(project_id: str):
+        return run(lambda: app.state.store.conflicts(project_id))
 
     @app.post("/api/tasks/{task_id}/reviews")
     def review(task_id: str, body: ReviewIn):

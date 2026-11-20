@@ -23,6 +23,7 @@ def test_contract_blocks_out_of_scope_and_failed_tests():
     store.transition(task["id"], "review")
     with pytest.raises(DomainError):
         store.add_review(task["id"], "范围看起来没问题", "low", True)
+    store.transition(task["id"], "blocked")
 
     other = store.create_task(project["id"], "补测试", "只改 src")
     store.set_contract(other["id"], ["pytest 通过"], ["src"])
@@ -32,6 +33,7 @@ def test_contract_blocks_out_of_scope_and_failed_tests():
     store.transition(other["id"], "review")
     with pytest.raises(DomainError):
         store.add_review(other["id"], "测试还没绿", "low", True)
+    store.transition(other["id"], "blocked")
 
     third = store.create_task(project["id"], "收尾", "只改 src")
     store.set_contract(third["id"], ["pytest 通过"], ["src"])
@@ -44,3 +46,31 @@ def test_contract_blocks_out_of_scope_and_failed_tests():
     store.transition(third["id"], "review")
     store.add_review(third["id"], "范围和测试都符合约定", "low", True)
     assert store.get_task(third["id"])["status"] == "accepted"
+
+
+def test_overlapping_running_tasks_are_rejected():
+    from fastapi.testclient import TestClient
+    from opendevmate.api import create_app
+
+    store = Store(":memory:")
+    project = store.create_project("demo", "管理一个示例仓库")
+    left = store.create_task(project["id"], "改服务", "src")
+    right = store.create_task(project["id"], "改接口", "src/api")
+    store.set_contract(left["id"], ["测试通过"], ["src"])
+    store.set_contract(right["id"], ["测试通过"], ["src/api"])
+    assert store.conflicts(project["id"]) == []
+    store.transition(left["id"], "ready")
+    store.transition(right["id"], "ready")
+    assert len(store.conflicts(project["id"])) == 1
+    store.transition(left["id"], "running")
+    with pytest.raises(DomainError):
+        store.transition(right["id"], "running")
+    other = store.create_task(project["id"], "改文档", "docs")
+    store.set_contract(other["id"], ["文档更新"], ["docs"])
+    store.transition(other["id"], "ready")
+    assert store.transition(other["id"], "running")["status"] == "running"
+
+    client = TestClient(create_app(store, workspace=None))
+    listed = client.get(f"/api/projects/{project['id']}/conflicts")
+    assert listed.status_code == 200
+    assert listed.json()[0]["status"] == "overlap"
