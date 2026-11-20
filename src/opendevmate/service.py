@@ -290,6 +290,11 @@ class Store:
         if accepted and risk == "high":
             raise DomainError("高风险审查不能直接验收")
         if accepted:
+            open_children = self.conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE parent_id=? AND status!='accepted'", (task_id,)
+            ).fetchone()[0]
+            if open_children:
+                raise DomainError("还有子任务没有验收")
             self._enforce_contract(task_id)
         row = {
             "id": _id(),

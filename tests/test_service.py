@@ -26,12 +26,19 @@ def test_task_flow_review_and_dashboard(tmp_path: Path):
     store.transition(task["id"], "review")
     with pytest.raises(DomainError):
         store.add_review(task["id"], "还有高风险", "high", True)
+    with pytest.raises(DomainError):
+        store.add_review(task["id"], "子任务还没完成", "low", True)
+    for child in children:
+        store.transition(child["id"], "ready")
+        store.transition(child["id"], "running")
+        store.transition(child["id"], "review")
+        store.add_review(child["id"], "子任务完成", "low", True)
     store.add_review(task["id"], "范围正确，测试通过", "low", True)
     assert store.get_task(task["id"])["status"] == "accepted"
     board = store.dashboard()
     assert board["project_count"] == 1
-    assert board["tasks_by_status"]["accepted"] == 1
-    assert board["tasks_by_status"]["draft"] == 2
+    assert board["tasks_by_status"]["accepted"] == 3
+    assert board["tasks_by_status"]["draft"] == 0
 
 
 def test_scan_stays_inside_workspace(tmp_path: Path):
