@@ -239,16 +239,24 @@ class Store:
             raise DomainError("只有执行中或审查中的任务可以记 Diff")
         if not summary.strip():
             raise DomainError("Diff 摘要不能为空")
+        cleaned = []
+        for item in files:
+            path = str(item).strip().replace("\\", "/")
+            if not path or path.startswith("/") or ".." in path.split("/"):
+                raise DomainError("Diff 路径必须是工作区内的相对路径")
+            if _sensitive(path):
+                raise DomainError("Diff 不能记录密钥或 Git 文件")
+            cleaned.append(path)
         row = {
             "id": _id(),
             "task_id": task_id,
             "summary": summary.strip(),
-            "files_json": json.dumps(files, ensure_ascii=False),
+            "files_json": json.dumps(cleaned, ensure_ascii=False),
             "created_at": _now(),
         }
         self.conn.execute("INSERT INTO diffs VALUES (:id,:task_id,:summary,:files_json,:created_at)", row)
         self.conn.commit()
-        row["files"] = files
+        row["files"] = cleaned
         return row
 
     def add_test_run(self, task_id: str, passed: int, failed: int, summary: str) -> dict:

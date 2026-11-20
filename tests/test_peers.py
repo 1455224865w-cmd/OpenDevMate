@@ -74,3 +74,17 @@ def test_overlapping_running_tasks_are_rejected():
     listed = client.get(f"/api/projects/{project['id']}/conflicts")
     assert listed.status_code == 200
     assert listed.json()[0]["status"] == "overlap"
+
+
+def test_diff_rejects_secret_and_parent_paths():
+    store = Store(":memory:")
+    project = store.create_project("demo", "管理一个示例仓库")
+    task = store.create_task(project["id"], "改代码", "src")
+    store.transition(task["id"], "ready")
+    store.transition(task["id"], "running")
+    with pytest.raises(DomainError):
+        store.add_diff(task["id"], "密钥", [".env"])
+    with pytest.raises(DomainError):
+        store.add_diff(task["id"], "越界", ["../outside.py"])
+    saved = store.add_diff(task["id"], "范围内", ["src/app.py"])
+    assert saved["files"] == ["src/app.py"]
