@@ -45,3 +45,7 @@ Diff 在写入时检查路径。密钥文件和越出工作区的路径不会进
 ## 0.1.6
 
 中英文切换默认中文。Spring AI 使用 `spring-ai/application-mcp.yml` 里的 Streamable HTTP 连接 `/mcp`。
+
+## 0.1.7
+
+配置从 Nacos 读取。镜像由 GitHub Actions 发布到 GHCR。

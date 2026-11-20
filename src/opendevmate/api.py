@@ -75,7 +75,7 @@ class KnowledgeIn(BaseModel):
 
 
 def create_app(store: Store | None = None, workspace: Path | None = None) -> FastAPI:
-    app = FastAPI(title="OpenDevMate", version="0.1.6")
+    app = FastAPI(title="OpenDevMate", version="0.1.7")
     install(app)
     mount(app)
     app.state.store = store or Store(os.environ.get("OPENDEVMATE_DB", "opendevmate.sqlite3"))

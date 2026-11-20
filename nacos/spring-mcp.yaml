@@ -1,0 +1,14 @@
+# 发布到 Nacos。dataId=opendevmate-spring.yaml，group=DEFAULT_GROUP。
+# MCP_SERVICE_URL 在 Nacos 或 Spring 环境中给出，不要写死地址。
+spring:
+  ai:
+    mcp:
+      client:
+        type: SYNC
+        toolcallback:
+          enabled: true
+        streamable-http:
+          connections:
+            opendevmate:
+              url: ${MCP_SERVICE_URL}
+              endpoint: ${MCP_ENDPOINT:/mcp}

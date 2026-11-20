@@ -29,7 +29,7 @@ pytest
 uvicorn opendevmate.api:app --reload
 ```
 
-打开 `http://127.0.0.1:8000/docs`。数据库默认是当前目录的 `opendevmate.sqlite3`。扫描根目录受 `OPENDEVMATE_WORKSPACE` 限制，默认是进程工作目录。
+接口文档路径是 `/docs`。本地 `uvicorn` 使用它自己的默认监听端口。容器和发布环境的地址、端口、数据库由 Nacos 或 `APP_*` 环境变量决定，不写进镜像。
 
 ## 许可证
 
@@ -39,4 +39,18 @@ Apache-2.0。选择理由见架构决策记录。
 
 默认语言是中文。请求带 `Accept-Language: en` 或 `?lang=en` 时，错误信息和工具说明返回英文。源码、SQL、日志原文不翻译。
 
-Spring AI 不内嵌在本服务里。把 `spring-ai/pom-snippet.xml` 的 `spring-ai-starter-mcp-client` 加到 Spring AI 应用，并使用 `spring-ai/application-mcp.yml` 的 Streamable HTTP 连接。端点是 `/mcp`。本仓库的测试覆盖 MCP 的 initialize、tools/list 和 tools/call，不编译 Java。
+Spring AI 不内嵌在本服务里。把 `spring-ai/pom-snippet.xml` 的 `spring-ai-starter-mcp-client` 加到 Spring AI 应用，连接配置由 `spring-ai/application-mcp.yml` 指向 Nacos，地址写在 `nacos/spring-mcp.yaml`。端点默认是 `/mcp`。本仓库的测试覆盖 MCP 的 initialize、tools/list 和 tools/call，不编译 Java。
+
+## 配置
+
+服务地址不写进镜像。设置 `NACOS_SERVER` 后，进程启动时读取 Nacos 中的服务配置，默认 dataId 见 `nacos/service.properties`。没有 Nacos 时使用 `APP_HOST`、`APP_PORT`、`APP_DATABASE` 和 `APP_LOCALE`。
+
+Spring AI 的 MCP 地址放在 Nacos 的 `nacos/spring-mcp.yaml`。`spring-ai/application-mcp.yml` 只指向 Nacos，不写服务地址。
+
+## 镜像
+
+```bash
+docker build -t opendevmate:local .
+```
+
+`main` 分支的 `.github/workflows/image.yml` 会把镜像推到 `ghcr.io/1455224865w-cmd/opendevmate`。

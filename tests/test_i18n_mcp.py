@@ -58,6 +58,9 @@ def test_mcp_matches_spring_ai_streamable_http():
     assert payload["name"] == "demo"
     assert "locally" in payload["message"]
     spring = (ROOT / "spring-ai" / "application-mcp.yml").read_text(encoding="utf-8")
-    assert "streamable-http:" in spring
-    assert "endpoint: /mcp" in spring
+    sample = (ROOT / "nacos" / "spring-mcp.yaml").read_text(encoding="utf-8")
+    assert "nacos:" in spring
+    assert "127.0.0.1" not in spring
+    assert "${MCP_SERVICE_URL}" in sample
+    assert "127.0.0.1" not in sample
     assert "spring-ai-starter-mcp-client" in (ROOT / "spring-ai" / "pom-snippet.xml").read_text(encoding="utf-8")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import re
 from contextvars import ContextVar
 
@@ -18,15 +20,15 @@ TEXT_FIELDS = {
 def negotiate(header: str | None, query: str | None = None) -> str:
     if query in LOCALES:
         return query
-    if not header:
-        return "zh"
-    for part in header.split(","):
-        token = part.split(";", 1)[0].strip().lower().replace("_", "-")
-        if token.startswith("en"):
-            return "en"
-        if token.startswith("zh"):
-            return "zh"
-    return "zh"
+    if header:
+        for part in header.split(","):
+            token = part.split(";", 1)[0].strip().lower().replace("_", "-")
+            if token.startswith("en"):
+                return "en"
+            if token.startswith("zh"):
+                return "zh"
+    fallback = os.environ.get("APP_LOCALE", "zh").strip().lower()
+    return fallback if fallback in LOCALES else "zh"
 
 
 def localize_error(message: str, locale: str) -> str:
