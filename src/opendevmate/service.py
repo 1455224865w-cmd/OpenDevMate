@@ -85,6 +85,9 @@ class Store:
               id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload_json TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS contracts (
+              task_id TEXT PRIMARY KEY, acceptance_json TEXT NOT NULL, touches_json TEXT NOT NULL
+            );
             """
         )
 
@@ -276,6 +279,8 @@ class Store:
             raise DomainError("审查结论不能为空")
         if accepted and risk == "high":
             raise DomainError("高风险审查不能直接验收")
+        if accepted:
+            self._enforce_contract(task_id)
         row = {
             "id": _id(),
             "task_id": task_id,
@@ -291,6 +296,64 @@ class Store:
             self.conn.execute("UPDATE tasks SET status='accepted' WHERE id=?", (task_id,))
         self.conn.commit()
         return row
+
+    def set_contract(self, task_id: str, acceptance: list[str], touches: list[str]) -> dict:
+        """验收标准和允许改动的路径。没有这份约定时，仍按原来的审查流程验收。"""
+        self.get_task(task_id)
+        criteria = [item.strip() for item in acceptance if item and str(item).strip()]
+        paths = []
+        for item in touches:
+            path = str(item).strip().replace("\\", "/")
+            if not path or path.startswith("/") or ".." in path.split("/"):
+                raise DomainError("改动范围必须是相对路径，不能包含 ..")
+            if _sensitive(path):
+                raise DomainError("改动范围不能包含密钥文件或 Git 目录")
+            paths.append(path)
+        if not criteria or not paths:
+            raise DomainError("验收需要至少一条标准和一个改动范围")
+        self.conn.execute(
+            """
+            INSERT INTO contracts (task_id, acceptance_json, touches_json)
+            VALUES (?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+              acceptance_json=excluded.acceptance_json,
+              touches_json=excluded.touches_json
+            """,
+            (task_id, json.dumps(criteria, ensure_ascii=False), json.dumps(paths, ensure_ascii=False)),
+        )
+        self.conn.commit()
+        return {"acceptance": criteria, "touches": paths}
+
+    def get_contract(self, task_id: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM contracts WHERE task_id=?", (task_id,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "acceptance": json.loads(row["acceptance_json"]),
+            "touches": json.loads(row["touches_json"]),
+        }
+
+    def _enforce_contract(self, task_id: str) -> None:
+        contract = self.get_contract(task_id)
+        if contract is None:
+            return
+        diffs = self.conn.execute(
+            "SELECT files_json FROM diffs WHERE task_id=? ORDER BY created_at", (task_id,)
+        ).fetchall()
+        files = [path for diff in diffs for path in json.loads(diff["files_json"])]
+        if not files:
+            raise DomainError("写了验收范围时，必须先记录 Diff")
+        sensitive = [path for path in files if _sensitive(path)]
+        if sensitive:
+            raise DomainError("Diff 包含密钥或 Git 文件，不能验收")
+        outside = [path for path in files if not _within(path, contract["touches"])]
+        if outside:
+            raise DomainError("Diff 超出声明的改动范围")
+        tests = self.conn.execute(
+            "SELECT failed FROM test_runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1", (task_id,)
+        ).fetchone()
+        if tests is None or tests["failed"] != 0:
+            raise DomainError("最近一次测试还有失败，不能验收")
 
     def dashboard(self) -> dict:
         projects = self.list_projects()
@@ -360,7 +423,32 @@ def build_instruction(store: Store, task: dict) -> str:
         lines.append("项目知识：")
         for item in constraints:
             lines.append(f"- [{item['kind']}] {item['title']}（来源 {item['source']}）：{item['body']}")
+    contract = store.get_contract(task["id"])
+    if contract:
+        lines.append("验收标准：")
+        for item in contract["acceptance"]:
+            lines.append(f"- {item}")
+        lines.append("只允许改动这些路径：" + ", ".join(contract["touches"]))
     return "\n".join(lines)
+
+
+def _sensitive(path: str) -> bool:
+    normal = path.replace("\\", "/")
+    name = normal.split("/")[-1]
+    return (
+        name in {".env", ".git", "id_rsa"}
+        or name.endswith((".pem", ".key"))
+        or "/.git/" in f"/{normal}/"
+        or normal.startswith(".git/")
+    )
+
+
+def _within(path: str, touches: list[str]) -> bool:
+    normal = path.replace("\\", "/").lstrip("./")
+    for touch in touches:
+        if normal == touch or normal.startswith(touch.rstrip("/") + "/"):
+            return True
+    return False
 
 
 def import_github_issues(store: Store, project_id: str, issues: list[dict], token_present: bool) -> list[dict]:
